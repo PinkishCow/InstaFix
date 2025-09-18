@@ -8,17 +8,17 @@
 # this machine's public IP, then replace ":80" below with your
 # domain name.
 
-domain.com, www.domain.com {
+iaxxis.gay, www.iaxxis.gay {
         # Another common task is to set up a reverse proxy:
         reverse_proxy localhost:3000
 }
 
-d.domain.com {
+d.iaxxis.gay {
         reverse_proxy localhost:3000
         rewrite * ?direct=true
 }
 
-g.domain.com {
+g.iaxxis.gay {
         reverse_proxy localhost:3000
         rewrite * ?gallery=true
 }
