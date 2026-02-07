@@ -10,16 +10,20 @@
 
 iaxxis.gay, www.iaxxis.gay {
         # Another common task is to set up a reverse proxy:
-        reverse_proxy localhost:3000
+        reverse_proxy instafix:3000
+}
+
+adamlikes.men {
+        reverse_proxy instafix:3000
 }
 
 d.iaxxis.gay {
-        reverse_proxy localhost:3000
+        reverse_proxy instafix:3000
         rewrite * ?direct=true
 }
 
 g.iaxxis.gay {
-        reverse_proxy localhost:3000
+        reverse_proxy instafix:3000
         rewrite * ?gallery=true
 }
 
