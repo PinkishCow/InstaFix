@@ -142,6 +142,16 @@ func Embed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// If video is blocked by Instagram, prepend notice to description
+	if item.VideoBlocked {
+		prefix := "[Video blocked by Instagram]"
+		if len(viewsData.Description) > 0 {
+			viewsData.Description = prefix + "\n" + viewsData.Description
+		} else {
+			viewsData.Description = prefix
+		}
+	}
+
 	typename := item.Medias[max(1, mediaNum)-1].TypeName
 	isImage := strings.Contains(typename, "Image") || strings.Contains(typename, "StoryVideo")
 	switch {

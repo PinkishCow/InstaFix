@@ -20,6 +20,7 @@
 !docker-compose.yml
 !Caddyfile
 !monitor.sh
+!restart.sh
 
 # !Makefile
 

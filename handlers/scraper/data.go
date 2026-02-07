@@ -44,10 +44,11 @@ type Media struct {
 }
 
 type InstaData struct {
-	PostID   string
-	Username string
-	Caption  string
-	Medias   []Media
+	PostID       string
+	Username     string
+	Caption      string
+	Medias       []Media
+	VideoBlocked bool
 }
 
 func init() {
@@ -79,7 +80,9 @@ func GetData(postID string) (*InstaData, error) {
 		}
 		err := binary.Unmarshal(v, i)
 		if err != nil {
-			return err
+			slog.Warn("Cache unmarshal failed (schema change?), treating as cache miss", "postID", postID, "err", err)
+			*i = InstaData{PostID: postID}
+			return nil
 		}
 		slog.Debug("Data parsed from cache", "postID", postID)
 		return nil
@@ -268,6 +271,25 @@ func (i *InstaData) ScrapeData() error {
 		}
 	}
 
+	// Try ?__a=1&__d=dis API as fallback when GQL fails and video is blocked
+	if !gqlData.Exists() && videoBlocked {
+		apiValue, err := scrapeFromAPI(i.PostID)
+		if err != nil {
+			slog.Warn("Failed to scrape data from scrapeFromAPI", "postID", i.PostID, "err", err)
+		} else if apiValue != nil {
+			if i.parseAPIResponse(apiValue) {
+				slog.Info("Data parsed from API (?__a=1&__d=dis)", "postID", i.PostID)
+				return nil
+			}
+			// If it returned graphql.shortcode_media, parse it as GQL data
+			apiResult := gjson.ParseBytes(apiValue)
+			if apiResult.Get("graphql.shortcode_media").Exists() {
+				gqlData = apiResult.Get("graphql")
+				slog.Info("Data parsed from API (graphql format)", "postID", i.PostID)
+			}
+		}
+	}
+
 	// If gqlData is blocked, use timeSliceData or embedData
 	if !gqlData.Exists() {
 		if timeSliceData.Exists() {
@@ -322,6 +344,21 @@ func (i *InstaData) ScrapeData() error {
 	if len(i.Medias) == 0 {
 		return ErrNotFound
 	}
+
+	// If video was blocked and we only got image thumbnails, flag it
+	if videoBlocked {
+		hasVideo := false
+		for _, m := range i.Medias {
+			if strings.Contains(m.TypeName, "Video") {
+				hasVideo = true
+				break
+			}
+		}
+		if !hasVideo {
+			i.VideoBlocked = true
+		}
+	}
+
 	return nil
 }
 
@@ -399,56 +436,29 @@ func scrapeFromEmbedHTML(embedHTML []byte) (string, error) {
 
 func scrapeFromGQL(postID string) ([]byte, error) {
 	gqlParams := url.Values{
-		"av":                       {"0"},
-		"__d":                      {"www"},
-		"__user":                   {"0"},
-		"__a":                      {"1"},
-		"__req":                    {"k"},
-		"__hs":                     {"19888.HYP:instagram_web_pkg.2.1..0.0"},
-		"dpr":                      {"2"},
-		"__ccg":                    {"UNKNOWN"},
-		"__rev":                    {"1014227545"},
-		"__s":                      {"trbjos:n8dn55:yev1rm"},
-		"__hsi":                    {"7380500578385702299"},
-		"__dyn":                    {"7xeUjG1mxu1syUbFp40NonwgU7SbzEdF8aUco2qwJw5ux609vCwjE1xoswaq0yE6ucw5Mx62G5UswoEcE7O2l0Fwqo31w9a9wtUd8-U2zxe2GewGw9a362W2K0zK5o4q3y1Sx-0iS2Sq2-azo7u3C2u2J0bS1LwTwKG1pg2fwxyo6O1FwlEcUed6goK2O4UrAwCAxW6Uf9EObzVU8U"},
-		"__csr":                    {"n2Yfg_5hcQAG5mPtfEzil8Wn-DpKGBXhdczlAhrK8uHBAGuKCJeCieLDyExenh68aQAKta8p8ShogKkF5yaUBqCpF9XHmmhoBXyBKbQp0HCwDjqoOepV8Tzk8xeXqAGFTVoCciGaCgvGUtVU-u5Vp801nrEkO0rC58xw41g0VW07ISyie2W1v7F0CwYwwwvEkw8K5cM0VC1dwdi0hCbc094w6MU1xE02lzw"},
-		"__comet_req":              {"7"},
-		"lsd":                      {"AVoPBTXMX0Y"},
-		"jazoest":                  {"2882"},
-		"__spin_r":                 {"1014227545"},
-		"__spin_b":                 {"trunk"},
-		"__spin_t":                 {"1718406700"},
-		"fb_api_caller_class":      {"RelayModern"},
-		"fb_api_req_friendly_name": {"PolarisPostActionLoadPostQueryQuery"},
-		"variables":                {`{"shortcode":"` + postID + `","fetch_comment_count":40,"parent_comment_count":24,"child_comment_count":3,"fetch_like_count":10,"fetch_tagged_user_count":null,"fetch_preview_comment_count":2,"has_threaded_comments":true,"hoisted_comment_id":null,"hoisted_reply_id":null}`},
-		"server_timestamps":        {"true"},
-		"doc_id":                   {"25531498899829322"},
+		"variables": {`{"shortcode":"` + postID + `"}`},
+		"doc_id":    {"10015901848480474"},
+		"lsd":       {"AVqbxe3J_YA"},
 	}
-	req, err := http.NewRequest("POST", "https://www.instagram.com/graphql/query/", strings.NewReader(gqlParams.Encode()))
+	req, err := http.NewRequest("POST", "https://www.instagram.com/api/graphql", strings.NewReader(gqlParams.Encode()))
 	if err != nil {
 		return nil, err
 	}
 	req.Header = http.Header{
-		"Accept":                      {"*/*"},
-		"Accept-Language":             {"en-US,en;q=0.9"},
-		"Content-Type":                {"application/x-www-form-urlencoded"},
-		"Origin":                      {"https://www.instagram.com"},
-		"Priority":                    {"u=1, i"},
-		"Sec-Ch-Prefers-Color-Scheme": {"dark"},
-		"Sec-Ch-Ua":                   {`"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"`},
-		"Sec-Ch-Ua-Full-Version-List": {`"Google Chrome";v="125.0.6422.142", "Chromium";v="125.0.6422.142", "Not.A/Brand";v="24.0.0.0"`},
-		"Sec-Ch-Ua-Mobile":            {"?0"},
-		"Sec-Ch-Ua-Model":             {`""`},
-		"Sec-Ch-Ua-Platform":          {`"macOS"`},
-		"Sec-Ch-Ua-Platform-Version":  {`"12.7.4"`},
-		"Sec-Fetch-Dest":              {"empty"},
-		"Sec-Fetch-Mode":              {"cors"},
-		"Sec-Fetch-Site":              {"same-origin"},
-		"User-Agent":                  {"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"},
-		"X-Asbd-Id":                   {"129477"},
-		"X-Bloks-Version-Id":          {"e2004666934296f275a5c6b2c9477b63c80977c7cc0fd4b9867cb37e36092b68"},
-		"X-Fb-Friendly-Name":          {"PolarisPostActionLoadPostQueryQuery"},
-		"X-Ig-App-Id":                 {"936619743392459"},
+		"Accept":             {"*/*"},
+		"Accept-Language":    {"en-US,en;q=0.9"},
+		"Content-Type":      {"application/x-www-form-urlencoded"},
+		"Origin":            {"https://www.instagram.com"},
+		"Sec-Fetch-Dest":    {"empty"},
+		"Sec-Fetch-Mode":    {"cors"},
+		"Sec-Fetch-Site":    {"same-origin"},
+		"User-Agent":        {"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"},
+		"X-Asbd-Id":         {"129477"},
+		"X-Fb-Lsd":          {"AVqbxe3J_YA"},
+		"X-Ig-App-Id":       {"936619743392459"},
+		"Sec-Ch-Ua":         {`"Google Chrome";v="144", "Chromium";v="144", "Not.A/Brand";v="24"`},
+		"Sec-Ch-Ua-Mobile":  {"?0"},
+		"Sec-Ch-Ua-Platform": {`"macOS"`},
 	}
 
 	client := http.Client{Transport: transport, Timeout: timeout}
@@ -458,4 +468,91 @@ func scrapeFromGQL(postID string) ([]byte, error) {
 	}
 	defer res.Body.Close()
 	return io.ReadAll(res.Body)
+}
+
+func scrapeFromAPI(postID string) ([]byte, error) {
+	req, err := http.NewRequest("GET", "https://www.instagram.com/p/"+postID+"/?__a=1&__d=dis", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header = http.Header{
+		"Accept":             {"*/*"},
+		"Accept-Language":    {"en-US,en;q=0.9"},
+		"Sec-Fetch-Dest":    {"empty"},
+		"Sec-Fetch-Mode":    {"cors"},
+		"Sec-Fetch-Site":    {"same-origin"},
+		"User-Agent":        {"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"},
+		"X-Ig-App-Id":       {"936619743392459"},
+		"X-Requested-With":  {"XMLHttpRequest"},
+	}
+
+	client := http.Client{Transport: transport, Timeout: timeout}
+	res, err := client.Do(req)
+	if err != nil || res == nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		return nil, errors.New("scrapeFromAPI: status " + strconv.Itoa(res.StatusCode))
+	}
+	return io.ReadAll(res.Body)
+}
+
+// parseAPIResponse parses the response from scrapeFromAPI into InstaData.
+// The ?__a=1&__d=dis endpoint returns a different JSON schema with items[0]
+// containing video_versions, image_versions2, user, and caption fields.
+func (i *InstaData) parseAPIResponse(data []byte) bool {
+	result := gjson.ParseBytes(data)
+
+	// Try graphql.shortcode_media path first (same format as GQL)
+	if result.Get("graphql.shortcode_media").Exists() {
+		return false // Let the existing parser handle it
+	}
+
+	// Try items[0] path (REST API format)
+	item := result.Get("items.0")
+	if !item.Exists() {
+		return false
+	}
+
+	i.Username = item.Get("user.username").String()
+	i.Caption = strings.TrimSpace(item.Get("caption.text").String())
+
+	// Handle carousel posts
+	carouselMedia := item.Get("carousel_media")
+	if carouselMedia.Exists() {
+		for _, m := range carouselMedia.Array() {
+			media := i.parseAPIMediaItem(m)
+			if media.URL != "" {
+				i.Medias = append(i.Medias, media)
+			}
+		}
+	} else {
+		media := i.parseAPIMediaItem(item)
+		if media.URL != "" {
+			i.Medias = append(i.Medias, media)
+		}
+	}
+
+	return len(i.Medias) > 0
+}
+
+func (i *InstaData) parseAPIMediaItem(item gjson.Result) Media {
+	// Check for video first
+	videoURL := item.Get("video_versions.0.url").String()
+	if videoURL != "" {
+		return Media{
+			TypeName: "GraphVideo",
+			URL:      videoURL,
+		}
+	}
+	// Fall back to image
+	imageURL := item.Get("image_versions2.candidates.0.url").String()
+	if imageURL != "" {
+		return Media{
+			TypeName: "GraphImage",
+			URL:      imageURL,
+		}
+	}
+	return Media{}
 }
